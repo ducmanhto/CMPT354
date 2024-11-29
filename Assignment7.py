@@ -76,9 +76,21 @@ def search_business(conn):
 
 def search_users(conn):
     name = input("Enter user name (or part of the name): ").strip()
-    min_review_count = input("Enter minimum review count: ").strip()
-    min_avg_stars = input("Enter minimum average stars: ").strip()
+    name = f'%{name}%' if name else '%'
 
+    min_review_count = input("Enter minimum review count: ").strip()
+    try:
+        min_reviews = float(min_review_count) if min_review_count else 0.0
+    except ValueError:
+        print("Invalid input for minimum stars. Defaulting to 0.0.")
+        min_reviews = 0.0
+
+    min_avg_stars = input("Enter minimum average stars: ").strip()
+    try:
+        min_avg = float(min_avg_stars) if min_avg_stars else 0.0
+    except ValueError:
+        print("Invalid input for minimum stars. Defaulting to 0.0.")
+        min_avg = 0.0
     cursor = conn.cursor()
     query = """
         SELECT user_id, name, review_count, useful, funny, cool, average_stars, yelping_since
@@ -86,7 +98,7 @@ def search_users(conn):
         WHERE LOWER(name) LIKE LOWER(%s) AND review_count >= %s AND average_stars >= %s
         ORDER BY name
     """
-    cursor.execute(query, (f'%{name}%', min_review_count, min_avg_stars))
+    cursor.execute(query, (name, min_reviews, min_avg))
     results = cursor.fetchall()
     if results:
         print("\nSearch Results:")
@@ -194,24 +206,35 @@ def main():
     if conn is None:
         return
     user_id = None
-    while user_id is None:
-        user_id = login(conn)
-    while True:
-        choice = main_menu()
-        if choice == '1':
-            search_business(conn)
-        elif choice == '2':
-            search_users(conn)
-        elif choice == '3':
-            make_friend(conn, user_id)
-        elif choice == '4':
-            review_business(conn, user_id)
-        elif choice == '5':
-            print("Goodbye!")
+    try:
+        conn.autocommit(False)  
+        user_id = None
+        while user_id is None:
+            user_id = login(conn)
+        while True:
+            choice = main_menu()
+            if choice == '1':
+                search_business(conn)
+            elif choice == '2':
+                search_users(conn)
+            elif choice == '3':
+                make_friend(conn, user_id)
+            elif choice == '4':
+                review_business(conn, user_id)
+            elif choice == '5':
+                print("Exiting and rolling back any changes made...")
+                conn.rollback()  # Rollback all changes
+                conn.close()
+                break
+            else:
+                print("Invalid choice. Please try again.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        conn.rollback()  
+    finally:
+        if conn:
             conn.close()
-            break
-        else:
-            print("Invalid choice. Please try again.")
+
 
 if __name__ == "__main__":
     main()
