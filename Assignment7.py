@@ -201,6 +201,26 @@ def update_business_stars_and_review_count(conn, business_id):
     """, (avg_stars, review_count, business_id))
     conn.commit()
 
+# For testing purpose only: Remove added friendship to maintain integrity of database
+def remove_friendship_entry(conn, user_id, friend_id):
+    cursor = conn.cursor()
+    # Verify the entry exists
+    cursor.execute("""
+        SELECT * FROM friendship
+        WHERE user_id = %s AND friend = %s
+    """, (user_id, friend_id))
+    entry = cursor.fetchone()
+    if entry:
+        # Delete the entry
+        cursor.execute("""
+            DELETE FROM friendship
+            WHERE user_id = %s AND friend = %s
+        """, (user_id, friend_id))
+        conn.commit()
+        print("The friendship entry has been removed.")
+    else:
+        print("The specified friendship entry does not exist.")
+
 def main():
     conn = connect_to_db()
     if conn is None:
@@ -224,6 +244,7 @@ def main():
             elif choice == '5':
                 print("Exiting and rolling back any changes made...")
                 conn.rollback()  # Rollback all changes
+                remove_friendship_entry(conn, '9nafgUuDMI2wZjul_-vXCw' ,'G3h8pIclwUbuu3itJqF7ug')
                 conn.close()
                 break
             else:
