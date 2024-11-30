@@ -1,4 +1,6 @@
 import pymssql
+import random
+import string
 
 def connect_to_db():
     try:
@@ -126,6 +128,12 @@ def make_friend(conn, user_id):
     else:
         print("The user ID you entered does not exist.")
 
+
+def generate_review_id():
+    characters = string.ascii_letters + string.digits + '-_'
+    review_id = ''.join(random.choice(characters) for _ in range(22))
+    return review_id
+
 def review_business(conn, user_id):
     business_id = input("Enter the business ID you want to review: ").strip()
     cursor = conn.cursor()
@@ -143,34 +151,45 @@ def review_business(conn, user_id):
         friend_review = cursor.fetchone()
         if friend_review:
             # Proceed to collect stars and submit the review
-            stars = input("Enter the number of stars (1-5): ").strip()
+            stars_input = input("Enter the number of stars (1-5): ").strip()
             # Validate stars
-            if stars.isdigit() and 1 <= int(stars) <= 5:
+            if stars_input.isdigit() and 1 <= int(stars_input) <= 5:
+                stars = int(stars_input)
                 try:
-                    # Constraint a): Check if the user has already reviewed this business
+                    # Check if the user has already reviewed this business
                     cursor.execute("""
-                        SELECT * FROM review WHERE user_id = %s AND business_id = %s
+                        SELECT review_id, stars FROM review WHERE user_id = %s AND business_id = %s
                     """, (user_id, business_id))
                     existing_review = cursor.fetchone()
                     if existing_review:
+                        review_id, old_stars = existing_review
                         # Update the existing review
                         cursor.execute("""
                             UPDATE review
                             SET stars = %s, useful = 0, funny = 0, cool = 0, date = GETDATE()
                             WHERE review_id = %s
-                        """, (stars, existing_review[0]))  # existing_review[0] is review_id
+                        """, (stars, review_id))
+                        conn.commit()
+                        print("Your review has been updated.")
+                        # Update the user's average stars (no change in review count)
+                        update_user_review_stats(conn, user_id, change_in_review_count=0, old_stars=old_stars, new_stars=stars)
                     else:
-                        # Insert new review
+                        # Generate a unique review_id
+                        new_review_id = generate_review_id()
                         cursor.execute("""
                             INSERT INTO review (review_id, user_id, business_id, stars, useful, funny, cool, date)
-                            VALUES (NEWID(), %s, %s, %s, 0, 0, 0, GETDATE())
-                        """, (user_id, business_id, stars))
-                    conn.commit()
-                    print("Your review has been submitted.")
+                            VALUES (%s, %s, %s, %s, 0, 0, 0, GETDATE())
+                        """, (new_review_id, user_id, business_id, stars))
+                        conn.commit()
+                        print("Your review has been submitted.")
+                        # Update the user's average stars and increment review count
+                        update_user_review_stats(conn, user_id, change_in_review_count=1, new_stars=stars)
                     # Update the business's stars and review count
                     update_business_stars_and_review_count(conn, business_id)
                 except pymssql.IntegrityError as e:
                     print("An error occurred while submitting your review:", e)
+                except Exception as e:
+                    print("An error occurred:", e)
             else:
                 print("Invalid number of stars. Please enter an integer between 1 and 5.")
         else:
@@ -178,12 +197,55 @@ def review_business(conn, user_id):
     else:
         print("The business ID you entered does not exist.")
 
+
+def update_user_review_stats(conn, user_id, change_in_review_count, old_stars=None, new_stars=None):
+    cursor = conn.cursor()
+    # Retrieve current average stars and review count
+    cursor.execute("""
+        SELECT average_stars, review_count
+        FROM user_yelp
+        WHERE user_id = %s
+    """, (user_id,))
+    result = cursor.fetchone()
+    if result:
+        current_avg_stars, current_review_count = result
+        current_avg_stars = float(current_avg_stars)
+        current_review_count = int(current_review_count)
+    else:
+        current_avg_stars, current_review_count = 0.0, 0
+
+    if change_in_review_count == 1:
+        # Adding a new review
+        new_review_count = current_review_count + 1
+        new_avg_stars = ((current_avg_stars * current_review_count) + new_stars) / new_review_count
+    elif change_in_review_count == 0:
+        # Updating an existing review
+        new_review_count = current_review_count
+        if old_stars is not None and new_stars is not None:
+            new_avg_stars = ((current_avg_stars * current_review_count) - old_stars + new_stars) / new_review_count
+        else:
+            print("Error: Old and new stars must be provided when updating a review.")
+            return
+    else:
+        print("Error: Invalid change in review count.")
+        return
+
+    # Update the user_yelp table
+    cursor.execute("""
+        UPDATE user_yelp
+        SET average_stars = %s, review_count = %s
+        WHERE user_id = %s
+    """, (new_avg_stars, new_review_count, user_id))
+    conn.commit()
+
+    print(f"User's average stars updated to {new_avg_stars}, review count is {new_review_count}")
+
 def update_business_stars_and_review_count(conn, business_id):
     cursor = conn.cursor()
     # Calculate the latest review from each user for the business
     cursor.execute("""
         WITH LatestReviews AS (
-            SELECT user_id, stars,
+            SELECT user_id, CAST(stars AS FLOAT) AS stars,
                    ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY date DESC) AS rn
             FROM review
             WHERE business_id = %s
@@ -192,7 +254,12 @@ def update_business_stars_and_review_count(conn, business_id):
         FROM LatestReviews
         WHERE rn = 1
     """, (business_id,))
-    avg_stars, review_count = cursor.fetchone()
+    result = cursor.fetchone()
+    if result and result[0] is not None:
+        avg_stars, review_count = result
+        print(f"Business's average stars: {avg_stars}, review count: {review_count}")
+    else:
+        avg_stars, review_count = 0, 0
     # Update the business table
     cursor.execute("""
         UPDATE business
@@ -201,25 +268,6 @@ def update_business_stars_and_review_count(conn, business_id):
     """, (avg_stars, review_count, business_id))
     conn.commit()
 
-# For testing purpose only: Remove added friendship to maintain integrity of database
-def remove_friendship_entry(conn, user_id, friend_id):
-    cursor = conn.cursor()
-    # Verify the entry exists
-    cursor.execute("""
-        SELECT * FROM friendship
-        WHERE user_id = %s AND friend = %s
-    """, (user_id, friend_id))
-    entry = cursor.fetchone()
-    if entry:
-        # Delete the entry
-        cursor.execute("""
-            DELETE FROM friendship
-            WHERE user_id = %s AND friend = %s
-        """, (user_id, friend_id))
-        conn.commit()
-        print("The friendship entry has been removed.")
-    else:
-        print("The specified friendship entry does not exist.")
 
 def main():
     conn = connect_to_db()
@@ -244,7 +292,6 @@ def main():
             elif choice == '5':
                 print("Exiting and rolling back any changes made...")
                 conn.rollback()  # Rollback all changes
-                remove_friendship_entry(conn, '9nafgUuDMI2wZjul_-vXCw' ,'G3h8pIclwUbuu3itJqF7ug')
                 conn.close()
                 break
             else:
