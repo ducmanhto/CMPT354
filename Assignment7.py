@@ -112,6 +112,9 @@ def search_users(conn):
 
 def make_friend(conn, user_id):
     friend_id = input("Enter the user ID of the person you want to add as a friend: ").strip()
+    if friend_id == user_id:
+        print("You can't friend yourself.")
+        return
     cursor = conn.cursor()
     # Check if the friend exists
     cursor.execute("SELECT * FROM user_yelp WHERE user_id = %s", (friend_id,))
